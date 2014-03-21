@@ -1,15 +1,10 @@
 package nl.xservices.plugins;
 
-import android.app.Activity;
-import android.content.ContentResolver;
-import android.content.Intent;
-import android.os.Build;
-import android.util.Log;
+import java.util.Date;
+
 import nl.xservices.plugins.accessor.AbstractCalendarAccessor;
 import nl.xservices.plugins.accessor.CalendarProviderAccessor;
 import nl.xservices.plugins.accessor.LegacyCalendarAccessor;
-import android.database.Cursor;
-import android.net.Uri;
 
 import org.apache.cordova.CallbackContext;
 import org.apache.cordova.CordovaPlugin;
@@ -18,7 +13,12 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.util.Date;
+import android.content.ContentResolver;
+import android.content.Intent;
+import android.database.Cursor;
+import android.net.Uri;
+import android.os.Build;
+import android.util.Log;
 
 public class Calendar extends CordovaPlugin {
   public static final String ACTION_CREATE_EVENT = "createEvent";
@@ -34,6 +34,10 @@ public class Calendar extends CordovaPlugin {
   private CallbackContext callback;
 
   private static final String LOG_TAG = AbstractCalendarAccessor.LOG_TAG;
+  
+  private Integer existingNumberOfEvents = 0;
+  
+  private JSONArray eventRequestData;
 
   @Override
   public boolean execute(String action, JSONArray args, CallbackContext callbackContext) throws JSONException {
@@ -69,8 +73,9 @@ public class Calendar extends CordovaPlugin {
   }
 
   private boolean createEventInteractively(JSONArray args) throws JSONException {
+    eventRequestData = new JSONArray();
+    eventRequestData = args;
     final JSONObject jsonFilter = args.getJSONObject(0);
-
     final Intent calIntent = new Intent(Intent.ACTION_EDIT)
         .setType("vnd.android.cursor.item/event")
         .putExtra("title", jsonFilter.optString("title"))
@@ -81,7 +86,7 @@ public class Calendar extends CordovaPlugin {
         .putExtra("hasAlarm", 1)
         .putExtra("allDay", AbstractCalendarAccessor.isAllDayEvent(new Date(jsonFilter.optLong("startTime")), new Date(jsonFilter.optLong("endTime"))));
         // TODO can we pass a reminder here?
-
+    existingNumberOfEvents = getEventCountInRange(args);
     this.cordova.startActivityForResult(this, calIntent, RESULT_CODE_CREATE);
     return true;
   }
@@ -208,15 +213,71 @@ public class Calendar extends CordovaPlugin {
     return false;
   }
 
+  public Integer getEventCountInRange(JSONArray args) throws JSONException{
+    Integer eventsCount = 0;
+      try {
+          Uri l_eventUri;
+          if (Build.VERSION.SDK_INT >= 8) {
+            l_eventUri = Uri.parse("content://com.android.calendar/events");
+          } else {
+            l_eventUri = Uri.parse("content://calendar/events");
+          }
+          ContentResolver contentResolver = this.cordova.getActivity().getContentResolver();
+          JSONObject jsonFilter = args.getJSONObject(0);
+          JSONArray result = new JSONArray();
+          long input_start_date = jsonFilter.optLong("startTime");
+          long input_end_date = jsonFilter.optLong("endTime");
+
+          //prepare start date
+          java.util.Calendar calendar_start = java.util.Calendar.getInstance();
+          Date date_start = new Date(input_start_date);
+          calendar_start.setTime(date_start);
+          calendar_start.add(calendar_start.DATE, -1);
+
+          //prepare end date
+          java.util.Calendar calendar_end = java.util.Calendar.getInstance();
+          Date date_end = new Date(input_end_date);
+          calendar_end.setTime(date_end);
+
+          //projection of DB columns
+          String[] l_projection = new String[]{"title", "dtstart", "dtend", "eventLocation", "allDay"};
+
+          //actual query
+          Cursor cursor = contentResolver.query(l_eventUri, l_projection, "( dtstart >" + calendar_start.getTimeInMillis() + " AND dtend <" + calendar_end.getTimeInMillis() + ")", null, "dtstart ASC");
+          
+          int i = 0;
+          while (cursor.moveToNext()) {
+              result.put(i++, new JSONObject().put("title", cursor.getString(0)).put("dtstart", cursor.getLong(1)).put("dtend", cursor.getLong(2)).put("eventLocation", cursor.getString(3) != null ? cursor.getString(3) : "").put("allDay", cursor.getInt(4)));
+            }
+          
+          if(result!=null){
+          eventsCount = result.length();
+          }
+          
+        } catch (JSONException e) {
+          System.err.println("Exception: " + e.getMessage());
+        }
+
+    return eventsCount;
+  }
+  
   public void onActivityResult(int requestCode, int resultCode, Intent data) {
+    Integer currentNumberOfEvents = 0;
+    try {
+    currentNumberOfEvents = getEventCountInRange(eventRequestData);
     if (requestCode == RESULT_CODE_CREATE) {
-      if (resultCode == Activity.RESULT_OK) {
-        callback.success();
-      }else if(resultCode == Activity.RESULT_CANCELED){
-          callback.error("User cancelled");
+        if (currentNumberOfEvents.compareTo(existingNumberOfEvents) > 0) {
+          callback.success();
+        }else{
+          callback.error("Unable to add event");
+        }
+      } else {
+        callback.error("Unable to add event");
       }
-    } else {
-      callback.error("Unable to add event (" + resultCode + ").");
-    }
+  } catch (JSONException e) {
+    // TODO Auto-generated catch block
+    e.printStackTrace();
+  }
+
   }
 }
